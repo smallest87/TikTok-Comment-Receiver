@@ -26,7 +26,8 @@ from http.cookies import SimpleCookie
 from io import BytesIO
 from json import JSONDecodeError
 from logging import Logger
-from typing import Optional, Type, Dict, Any, Union, Callable, List, Coroutine, AsyncIterator, Tuple, TypedDict, cast
+# Menambahkan Awaitable untuk fix error typing sebelumnya
+from typing import Optional, Type, Dict, Any, Union, Callable, List, Coroutine, AsyncIterator, Tuple, TypedDict, cast, Awaitable
 
 # --- 3RD PARTY IMPORTS (MUST BE INSTALLED VIA PIP) ---
 import betterproto
@@ -36,7 +37,18 @@ from pyee.asyncio import AsyncIOEventEmitter
 from pyee.base import Handler
 from python_socks import ProxyType, parse_proxy_url
 from typing_extensions import deprecated
-from websockets import InvalidStatusCode
+
+# --- WARNING FIX START ---
+# Filter warning spesifik dari websockets
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="websockets")
+try:
+    # Coba import cara baru (versi 14+)
+    from websockets.exceptions import InvalidStatusCode
+except ImportError:
+    # Fallback ke cara lama
+    from websockets import InvalidStatusCode
+# --- WARNING FIX END ---
+
 from websockets.legacy.client import Connect, WebSocketClientProtocol
 from websockets_proxy import websockets_proxy
 from websockets_proxy.websockets_proxy import ProxyConnect
@@ -944,7 +956,7 @@ class TikTokLiveClient(AsyncIOEventEmitter):
 
 if __name__ == '__main__':
     # USER CONFIGURATION
-    TARGET_USERNAME = "@isaackogz"
+    TARGET_USERNAME = "@weathernewslive"
 
     # Create the client
     client: TikTokLiveClient = TikTokLiveClient(unique_id=TARGET_USERNAME)
