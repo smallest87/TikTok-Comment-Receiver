@@ -1,7 +1,7 @@
 # ==============================================================================
-# TIKTOK COMMENT RECEIVER (STANDALONE - ORIGINAL FETCH LOGIC)
-# Target: @weathernewslive
-# Logic: Uses Remote Sign Server (No Local Oracle Needed)
+# TIKTOK COMMENT RECEIVER (NATIVE PYQT6 - STABLE VERSION)
+# Target: @isaackogz
+# Logic: Uses Remote Sign Server + Native PyQt6 GUI
 # ==============================================================================
 
 import asyncio
@@ -28,7 +28,7 @@ from json import JSONDecodeError
 from logging import Logger
 from typing import Optional, Type, Dict, Any, Union, Callable, List, Coroutine, AsyncIterator, Tuple, TypedDict, cast, Awaitable
 
-# --- 3RD PARTY IMPORTS (MUST BE INSTALLED VIA PIP) ---
+# --- 3RD PARTY IMPORTS ---
 import betterproto
 import httpx
 from httpx import Cookies, AsyncClient, Proxy, URL, Response
@@ -37,17 +37,18 @@ from pyee.base import Handler
 from python_socks import ProxyType, parse_proxy_url
 from typing_extensions import deprecated
 
-# --- WARNING FIX & IMPORT COMPATIBILITY ---
-# Kita suppress warning dulu sebelum import
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="websockets")
+# --- PYQT6 IMPORTS (NATIVE ONLY) ---
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QObject
+from PyQt6.QtWidgets import (QApplication, QVBoxLayout, QHBoxLayout, QWidget, 
+                             QMainWindow, QPushButton, QLineEdit, QTextEdit, 
+                             QLabel, QFrame)
+from PyQt6.QtGui import QFont, QTextCursor, QColor
 
+# --- WARNING FIX ---
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="websockets")
 try:
-    # PRIORITAS 1: CARA BARU (Websockets v14+)
-    # Import dari submodule .exceptions agar tidak muncul warning
     from websockets.exceptions import InvalidStatusCode
 except ImportError:
-    # PRIORITAS 2: CARA LAMA (Websockets versi lama)
-    # Jika submodule exceptions tidak ada/gagal, ambil dari root
     from websockets import InvalidStatusCode
 
 from websockets.legacy.client import Connect, WebSocketClientProtocol
@@ -55,7 +56,8 @@ from websockets_proxy import websockets_proxy
 from websockets_proxy.websockets_proxy import ProxyConnect
 
 # ==============================================================================
-# SECTION 1: SETTINGS
+# [BAGIAN 1-7: LOGIKA KONEKSI TIKTOK]
+# (Bagian ini sama persis dengan logika core sebelumnya, tidak diubah)
 # ==============================================================================
 
 PACKAGE_VERSION = "6.0.0"
@@ -96,7 +98,6 @@ DEFAULT_WS_CLIENT_PARAMS: Dict[str, Union[int, str]] = {
 }
 
 DEFAULT_WS_CLIENT_PARAMS_APPEND_STR: str = "&version_code=270000"
-
 DEFAULT_REQUEST_HEADERS: Dict[str, str] = {
     "Connection": 'keep-alive', 'Cache-Control': 'max-age=0', 'User-Agent': Device["user_agent"],
     "Accept": 'text/html,application/json,application/protobuf', "Referer": 'https://www.tiktok.com/',
@@ -104,14 +105,13 @@ DEFAULT_REQUEST_HEADERS: Dict[str, str] = {
     'Accept-Encoding': 'gzip, deflate', "Sec-Fetch-Site": 'same-site', "Sec-Fetch-Mode": 'cors',
     "Sec-Fetch-Dest": 'empty', "Sec-Fetch-Ua-Mobile": '?0',
 }
-
 DEFAULT_COOKIES: Dict[str, str] = {"tt-target-idc": "useast1a"}
 CLIENT_NAME: str = "ttlive-python"
 
 @dataclass()
 class _WebDefaults:
     tiktok_app_url: str = "https://www.tiktok.com"
-    tiktok_sign_url: str = "https://tiktok.eulerstream.com" # ORIGINAL SIGN SERVER
+    tiktok_sign_url: str = "https://tiktok.eulerstream.com"
     tiktok_webcast_url: str = 'https://webcast.tiktok.com/webcast'
     web_client_params: dict = field(default_factory=lambda: DEFAULT_WEB_CLIENT_PARAMS)
     web_client_headers: dict = field(default_factory=lambda: DEFAULT_REQUEST_HEADERS)
@@ -124,7 +124,7 @@ class _WebDefaults:
 WebDefaults: _WebDefaults = _WebDefaults()
 
 # ==============================================================================
-# SECTION 2: LOGGING
+# SECTION 2: LOGGING (SIMPLIFIED & STABLE)
 # ==============================================================================
 
 class LogLevel(enum.Enum):
@@ -136,8 +136,9 @@ class TikTokLiveLogHandler(logging.StreamHandler):
     LOGGER_NAME: str = "TikTokLive"
     LOGGER: Optional[logging.Logger] = None
     TIME_FORMAT: str = "%H:%M:%S"
-    SPACING: Dict[int, int] = {logging.INFO: 1, logging.ERROR: 0, logging.WARNING: 1, logging.DEBUG: 0}
-    FORMAT: str = "[%(name)s] %(levelname)s from %(stack)s:%(lineno)d — %(message)s"
+    
+    # Hapus 'stack' dari format string agar tidak error KeyError
+    FORMAT: str = "[%(name)s] %(levelname)s — %(message)s"
 
     def __init__(self, stream: Optional[Any] = None, formatter: Optional[logging.Formatter] = None):
         super().__init__(stream=stream or sys.stderr)
@@ -150,35 +151,23 @@ class TikTokLiveLogHandler(logging.StreamHandler):
             log_handler: TikTokLiveLogHandler = TikTokLiveLogHandler(stream)
             cls.LOGGER = logging.getLogger(cls.LOGGER_NAME)
             cls.LOGGER.addHandler(log_handler)
+            # Cegah log ganda (propagate false)
+            cls.LOGGER.propagate = False
+        
         cls.LOGGER.setLevel((level if level is not None else LogLevel.WARNING).value)
         return cls.LOGGER
 
-    @classmethod
-    def format_path(cls, record: logging.LogRecord) -> str:
-        work_dir: str = os.path.normpath(os.getcwd())
-        stack_path: str = os.path.normpath(record.pathname)
-        start_location: int = stack_path.find(work_dir)
-        if start_location >= 0: stack_path = stack_path[start_location + len(work_dir) + 1:]
-        path_parts: List[str] = stack_path.split("/")
-        finished_parts: List[str] = []
-        for idx, part in enumerate(path_parts):
-            if not part: continue
-            if idx + 1 == len(path_parts): finished_parts.append(part); break
-            finished_parts.append(part[0])
-        return ".".join(finished_parts)
-
     def emit(self, record: logging.LogRecord) -> None:
+        # Implementasi emit standar yang aman
         try:
-            record.spacing = self.SPACING.get(record.levelno, 0) * " "
-            record.stack = self.format_path(record)
-            self.stream.write(self.format(record) + self.terminator)
+            msg = self.format(record)
+            stream = self.stream
+            stream.write(msg + self.terminator)
             self.flush()
-        except Exception: self.handleError(record)
+        except Exception:
+            self.handleError(record)
 
-# ==============================================================================
-# SECTION 3: ERRORS
-# ==============================================================================
-
+# --- ERRORS ---
 class TikTokLiveError(RuntimeError):
     def __init__(self, *args):
         args = list(args)
@@ -196,7 +185,6 @@ class AgeRestrictedError(TikTokLiveError): pass
 class InitialCursorMissingError(TikTokLiveError): pass
 class WebsocketURLMissingError(TikTokLiveError): pass
 class WebcastBlocked200Error(TikTokLiveError): pass
-
 class SignAPIError(TikTokLiveError):
     class ErrorReason(enum.Enum):
         RATE_LIMIT = 1; CONNECT_ERROR = 2; EMPTY_PAYLOAD = 3; SIGN_NOT_200 = 4
@@ -209,23 +197,17 @@ class SignAPIError(TikTokLiveError):
         super().__init__(" ".join(args))
     @property
     def response(self) -> httpx.Response | None: return self._response
-
 class SignatureRateLimitError(SignAPIError):
     def __init__(self, api_message: Optional[str], *args, response: httpx.Response):
         super().__init__(SignAPIError.ErrorReason.RATE_LIMIT, *args, response=response)
-
 class AuthenticatedWebSocketConnectionError(SignAPIError):
     def __init__(self, *args, **kwargs):
         super().__init__(SignAPIError.ErrorReason.AUTHENTICATED_WS, *args, **kwargs)
-
 class FailedParseAppInfo(TikTokLiveError): pass
 class FailedResolveUserId(TikTokLiveError): pass
 class FailedParseRoomIdError(TikTokLiveError): pass
 
-# ==============================================================================
-# SECTION 4: PROTOCOLS
-# ==============================================================================
-
+# --- PROTOCOLS ---
 class WebcastWSAckPayload(TypedDict):
     server_fetch_time: int
     push_time: int
@@ -262,7 +244,6 @@ class WebcastImEnterRoomMessage(betterproto.Message):
     filter_welcome_msg: str = betterproto.string_field(9)
     is_anchor_continue_keep_msg: bool = betterproto.bool_field(10)
 
-# --- tiktok_proto.py (Essential Only) ---
 class ControlAction(betterproto.Enum):
     CONTROL_ACTION_UNKNOWN = 0; CONTROL_ACTION_STREAM_PAUSED = 1; CONTROL_ACTION_STREAM_UNPAUSED = 2
     CONTROL_ACTION_STREAM_ENDED = 3; CONTROL_ACTION_STREAM_SUSPENDED = 4
@@ -389,10 +370,7 @@ class WebcastControlMessage(betterproto.Message):
     base_message: "CommonMessageData" = betterproto.message_field(1)
     action: int = betterproto.int32_field(2)
 
-# ==============================================================================
-# SECTION 5: EVENTS
-# ==============================================================================
-
+# --- EVENTS ---
 class BaseEvent:
     @property
     def type(self) -> str: return self.get_type()
@@ -437,11 +415,7 @@ EVENT_MAPPINGS: Dict[str, BaseEvent] = {"WebcastChatMessage": CommentEvent, "Web
 ProtoEvent = Union[CommentEvent, ControlEvent]
 CustomEvent = Union[WebsocketResponseEvent, UnknownEvent, ConnectEvent, LiveEndEvent, LivePauseEvent, LiveUnpauseEvent, DisconnectEvent]
 
-# ==============================================================================
-# SECTION 6: CLIENT LOGIC
-# ==============================================================================
-
-# --- Helper Utilities ---
+# --- CLIENT LOGIC ---
 def build_webcast_uri(initial_webcast_response: ProtoMessageFetchResult, base_uri_params: dict, base_uri_append_str: str) -> str:
     if not initial_webcast_response.cursor: raise InitialCursorMissingError("Missing cursor.")
     if not initial_webcast_response.push_server: raise WebsocketURLMissingError("No websocket URL.")
@@ -473,12 +447,10 @@ def check_authenticated_session(session_id: Optional[str], tt_target_idc: Option
     if not tt_target_idc: raise ValueError("Target IDC required.")
     return True
 
-# --- TikTok Signer (Simplified Holder) ---
 class TikTokSigner:
     def __init__(self, *args, **kwargs):
         self.client = httpx.AsyncClient()
 
-# --- WS Connect ---
 WebcastProxy = Union[httpx.Proxy, websockets_proxy.Proxy]
 WebcastIterator = AsyncIterator[Tuple[Optional[WebcastPushFrame], ProtoMessageFetchResult]]
 
@@ -490,12 +462,10 @@ class WebcastConnect(Connect):
         self._ws: Optional[WebSocketClientProtocol] = None
         self._ws_options: Optional[dict[str, str]] = None
         self._initial_response: ProtoMessageFetchResult = initial_webcast_response
-
     @property
     def ws(self) -> Optional[WebSocketClientProtocol]: return self._ws
     @property
     def ws_options(self) -> Optional[dict[str, str]]: return self._ws_options
-
     async def __aiter__(self) -> WebcastIterator:
         try:
             async with self as protocol:
@@ -521,7 +491,6 @@ class WebcastProxyConnect(WebcastConnect, ProxyConnect):
         parsed[3], parsed[4] = proxy.auth[0], proxy.auth[1]
         return websockets_proxy.Proxy(*parsed)
 
-# --- WS Client ---
 class WebcastWSClient:
     DEFAULT_PING_INTERVAL: float = 5.0
     def __init__(self, ws_kwargs: Optional[dict] = None, ws_proxy: Optional[WebcastProxy] = None):
@@ -532,34 +501,27 @@ class WebcastWSClient:
         self._ws_proxy: Optional[WebcastProxy] = ws_proxy or ws_kwargs.get("proxy")
         self._connect_generator_class = WebcastProxyConnect if self._ws_proxy else WebcastConnect
         self._connection_generator: Optional[WebcastConnect] = None
-
     @property
     def ws(self) -> Optional[WebSocketClientProtocol]: return self._connection_generator.ws if self._connection_generator else None
     @property
     def connected(self) -> bool: return self.ws and self.ws.open
-
     async def send(self, message: Union[bytes, betterproto.Message]) -> None:
         if not self.connected: return
         await self.ws.send(message=bytes(message) if isinstance(message, betterproto.Message) else message)
-
     async def send_ack(self, webcast_response: ProtoMessageFetchResult, webcast_push_frame: WebcastPushFrame) -> None:
         if not self.connected: return
         await self.send(message=WebcastPushFrame(payload_type="ack", payload_encoding="pb", log_id=webcast_push_frame.log_id, payload=(webcast_response.internal_ext or "-").encode()))
-
     async def disconnect(self) -> None:
         if not self.connected: return
         await self.ws.close()
-
     def get_ws_cookie_string(self, cookies: httpx.Cookies) -> str:
         return " ".join([f"{key}={value};" for key, value in cookies.items()])
-
     async def connect(self, room_id: int, cookies: httpx.Cookies, user_agent: str, initial_webcast_response: ProtoMessageFetchResult, process_connect_events: bool = True, compress_ws_events: bool = True) -> AsyncIterator[ProtoMessageFetchResult]:
         ws_kwargs: dict = self._ws_kwargs.copy()
         if self._ws_proxy is not None:
             ws_kwargs["proxy_conn_timeout"] = ws_kwargs.get("proxy_conn_timeout", 10.0)
             ws_kwargs["proxy"] = self._ws_proxy
         if not process_connect_events: initial_webcast_response.messages = []
-
         self._connection_generator = self._connect_generator_class(
             initial_webcast_response=initial_webcast_response,
             subprotocols=ws_kwargs.pop("subprotocols", ["echo-protocol"]),
@@ -569,30 +531,25 @@ class WebcastWSClient:
             extra_headers={"Cookie": self.get_ws_cookie_string(cookies), "User-Agent": user_agent, **ws_kwargs.pop("extra_headers", {})},
             **{**ws_kwargs, "ping_timeout": None, "ping_interval": None}
         )
-
         async for webcast_push_frame, webcast_response in cast(WebcastIterator, self._connection_generator):
             if webcast_response.is_first: await self.switch_rooms(room_id=room_id)
             if webcast_response.need_ack: await self.send_ack(webcast_response=webcast_response, webcast_push_frame=webcast_push_frame)
             yield webcast_response
             if not self.connected: break
-
         if self._ping_loop and not self._ping_loop.done():
             self._ping_loop.cancel()
             await self._ping_loop
         self._ping_loop = None
         self._connection_generator = None
-
     def restart_ping_loop(self, room_id: int) -> None:
         if self._ping_loop: self._ping_loop.cancel()
         self._seq_id = 1
         self._ping_loop = asyncio.create_task(self._ping_loop_fn(room_id))
-
     async def switch_rooms(self, room_id: int) -> None:
         im_enter_room_message = WebcastImEnterRoomMessage(room_id=room_id, live_id=12, identity="audience", filter_welcome_msg="0", is_anchor_continue_keep_msg=False)
         webcast_push_frame = WebcastPushFrame(payload_type="im_enter_room", payload_encoding="pb", payload=bytes(im_enter_room_message))
         await self.send(message=webcast_push_frame)
         self.restart_ping_loop(room_id=room_id)
-
     async def _ping_loop_fn(self, room_id: int) -> None:
         try:
             if not self.connected: return
@@ -608,7 +565,6 @@ class WebcastWSClient:
         except asyncio.CancelledError: pass
         except Exception: self._logger.error("Ping loop failed", exc_info=True)
 
-# --- Web Base ---
 class TikTokHTTPClient:
     def __init__(self, web_proxy: Optional[Proxy] = None, httpx_kwargs: Optional[dict] = None):
         self.cookies = Cookies(WebDefaults.web_client_cookies)
@@ -616,7 +572,6 @@ class TikTokHTTPClient:
         self.params = WebDefaults.web_client_params
         self._httpx = AsyncClient(proxy=web_proxy, cookies=self.cookies, **(httpx_kwargs or {}))
         self._tiktok_signer = TikTokSigner()
-
     @property
     def signer(self) -> TikTokSigner: return self._tiktok_signer
     async def close(self) -> None: await self._httpx.aclose()
@@ -630,7 +585,6 @@ class ClientRoute(ABC):
     @abstractmethod
     def __call__(self, **kwargs: Any) -> Awaitable[Any]: raise NotImplementedError
 
-# --- Fetch Room ID Route ---
 class FetchRoomIdLiveHTMLRoute(ClientRoute):
     SIGI_PATTERN: re.Pattern = re.compile(r"""<script id="SIGI_STATE" type="application/json">(.*?)</script>""")
     async def __call__(self, unique_id: str) -> str:
@@ -644,10 +598,8 @@ class FetchRoomIdLiveHTMLRoute(ClientRoute):
         if room_data.get('status') == 4: raise UserOfflineError("User is offline.")
         return room_data.get('roomId')
 
-# --- REPLACED: Fetch Signed Websocket Route (ORIGINAL LOGIC) ---
 class WebcastPlatform(enum.Enum):
-    WEB = "web"
-    MOBILE = "mobile"
+    WEB = "web"; MOBILE = "mobile"
 
 class FetchSignedWebSocketRoute(ClientRoute):
     async def __call__(self, platform: WebcastPlatform, room_id: Optional[int] = None, session_id: Optional[str] = None, tt_target_idc: Optional[str] = None) -> ProtoMessageFetchResult:
@@ -661,52 +613,33 @@ class FetchSignedWebSocketRoute(ClientRoute):
         }
         session_id = session_id or self._web.cookies.get('sessionid')
         tt_target_idc = tt_target_idc or self._web.cookies.get('tt-target-idc')
-
         if check_authenticated_session(session_id, tt_target_idc, session_required=False):
             sign_params['session_id'] = session_id
             sign_params['tt_target_idc'] = tt_target_idc
-            self._logger.warning("Sending session ID to sign server.")
-
         try:
-            response: httpx.Response = await signer_client.get(
-                url=WebDefaults.tiktok_sign_url + "/webcast/fetch/",
-                params=sign_params, timeout=15
-            )
+            response: httpx.Response = await signer_client.get(url=WebDefaults.tiktok_sign_url + "/webcast/fetch/", params=sign_params, timeout=15)
         except httpx.ConnectError as ex:
             raise SignAPIError(SignAPIError.ErrorReason.CONNECT_ERROR, "Failed to connect to sign server!", response=None) from ex
-
         data: bytes = await response.aread()
-
-        if response.status_code == 429:
-            raise SignatureRateLimitError("Rate Limit", "Too many connections, try again later.", response=response)
-        elif not data:
-            raise SignAPIError(SignAPIError.ErrorReason.EMPTY_PAYLOAD, "Sign API returned empty response.", response=response)
-        elif response.status_code != 200:
-            raise SignAPIError(SignAPIError.ErrorReason.SIGN_NOT_200, f"Sign API Error: {response.status_code}", response=response)
-
+        if response.status_code == 429: raise SignatureRateLimitError("Rate Limit", "Too many connections.", response=response)
+        elif not data: raise SignAPIError(SignAPIError.ErrorReason.EMPTY_PAYLOAD, "Sign API empty.", response=response)
+        elif response.status_code != 200: raise SignAPIError(SignAPIError.ErrorReason.SIGN_NOT_200, f"Sign API Error: {response.status_code}", response=response)
         self._update_client_cookies(response)
         return extract_webcast_response_message(logger=self._logger, push_frame=WebcastPushFrame(log_id=-1, payload=data, payload_type="msg"))
-
     def _update_client_cookies(self, response: Response) -> None:
         jar: SimpleCookie = SimpleCookie()
         cookies_header: Optional[str] = response.headers.get("X-Set-TT-Cookie")
-        if not cookies_header:
-            raise SignAPIError(SignAPIError.ErrorReason.EMPTY_COOKIES, "Sign server did not return cookies!", response=response)
+        if not cookies_header: raise SignAPIError(SignAPIError.ErrorReason.EMPTY_COOKIES, "Sign server no cookies!", response=response)
         jar.load(cookies_header)
         for cookie, morsel in jar.items():
             if self._web.cookies.get(cookie): self._web.cookies.delete(cookie)
             self._web.cookies.set(cookie, morsel.value, ".tiktok.com")
 
-# --- Web Client ---
 class TikTokWebClient(TikTokHTTPClient):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.fetch_room_id_from_html = FetchRoomIdLiveHTMLRoute(self)
         self.fetch_signed_websocket = FetchSignedWebSocketRoute(self)
-
-# ==============================================================================
-# SECTION 7: MAIN CLIENT
-# ==============================================================================
 
 class TikTokLiveClient(AsyncIOEventEmitter):
     def __init__(self, unique_id: str | int, platform: WebcastPlatform = WebcastPlatform.WEB, web_proxy: Optional[httpx.Proxy] = None, ws_proxy: Optional[WebcastProxy] = None, web_kwargs: Optional[dict] = None, ws_kwargs: Optional[dict] = None):
@@ -721,31 +654,18 @@ class TikTokLiveClient(AsyncIOEventEmitter):
         self._unique_id: str = self.parse_unique_id(unique_id)
         self._room_id: Optional[int] = None
         self._event_loop_task: Optional[Task] = None
-
     @classmethod
     def parse_unique_id(cls, unique_id: str) -> str:
         return unique_id.replace(WebDefaults.tiktok_app_url + "/", "").replace("/live", "").replace("@", "", 1).strip()
-
     async def start(self, process_connect_events: bool = True, compress_ws_events: bool = True, room_id: Optional[int] = None) -> Task:
         if self._ws.connected: raise AlreadyConnectedError("Already connected!")
-        
-        try:
-            self._room_id = int(room_id or await self._web.fetch_room_id_from_html(self._unique_id))
-        except Exception as e:
-            self._logger.error(f"Failed to fetch room ID: {e}")
-            raise e
-
+        try: self._room_id = int(room_id or await self._web.fetch_room_id_from_html(self._unique_id))
+        except Exception as e: self._logger.error(f"Failed to fetch room ID: {e}"); raise e
         self._web.params["room_id"] = str(self._room_id)
         self._logger.info(f"Connected to Room ID: {self._room_id}")
-
-        # Fetch Signed Websocket URL using the Original Logic (EulerStream)
         initial_webcast_response: ProtoMessageFetchResult = await self._web.fetch_signed_websocket(self._ws_platform)
-
-        self._event_loop_task = self._asyncio_loop.create_task(
-            self._ws_client_loop(initial_webcast_response, process_connect_events, compress_ws_events)
-        )
+        self._event_loop_task = self._asyncio_loop.create_task(self._ws_client_loop(initial_webcast_response, process_connect_events, compress_ws_events))
         return self._event_loop_task
-
     async def connect(self, callback: Optional[Callable] = None, **kwargs) -> Task:
         task: Task = await self.start(**kwargs)
         try:
@@ -754,10 +674,7 @@ class TikTokLiveClient(AsyncIOEventEmitter):
             await task
         except CancelledError: self._logger.debug("Client stopped.")
         return task
-
-    def run(self, **kwargs) -> Task:
-        return self._asyncio_loop.run_until_complete(self.connect(**kwargs))
-
+    def run(self, **kwargs) -> Task: return self._asyncio_loop.run_until_complete(self.connect(**kwargs))
     async def disconnect(self) -> None:
         await self._ws.disconnect()
         if self._event_loop_task:
@@ -765,61 +682,34 @@ class TikTokLiveClient(AsyncIOEventEmitter):
             except: pass
             self._event_loop_task = None
         await self._web.close()
-
-    def on(self, event: Type[BaseEvent], f: Optional[Callable] = None):
-        return super().on(event.get_type(), f)
-
-    def add_listener(self, event: Type[BaseEvent], f: Callable):
-        return super().add_listener(event=event if isinstance(event, str) else event.get_type(), f=f)
-
+    def on(self, event: Type[BaseEvent], f: Optional[Callable] = None): return super().on(event.get_type(), f)
+    def add_listener(self, event: Type[BaseEvent], f: Callable): return super().add_listener(event=event if isinstance(event, str) else event.get_type(), f=f)
     async def _ws_client_loop(self, initial_webcast_response: ProtoMessageFetchResult, process_connect_events: bool, compress_ws_events: bool) -> None:
-        async for webcast_response in self._ws.connect(
-                initial_webcast_response=initial_webcast_response,
-                process_connect_events=process_connect_events,
-                compress_ws_events=compress_ws_events,
-                cookies=self._web.cookies,
-                room_id=self._room_id,
-                user_agent=self._web.headers['User-Agent']
-        ):
-            async for event in self._parse_webcast_response(webcast_response):
-                self.emit(event.type, event)
+        async for webcast_response in self._ws.connect(initial_webcast_response=initial_webcast_response, process_connect_events=process_connect_events, compress_ws_events=compress_ws_events, cookies=self._web.cookies, room_id=self._room_id, user_agent=self._web.headers['User-Agent']):
+            async for event in self._parse_webcast_response(webcast_response): self.emit(event.type, event)
         self.emit(DisconnectEvent.get_type(), DisconnectEvent())
-
     async def _parse_webcast_response(self, webcast_response: ProtoMessageFetchResult) -> AsyncIterator[BaseEvent]:
         if webcast_response.is_first: yield ConnectEvent(unique_id=self._unique_id, room_id=self._room_id)
         for message in webcast_response.messages:
             for event in await self._parse_webcast_response_message(message):
                 if event: yield event
-
     async def _parse_webcast_response_message(self, webcast_response_message: Optional[ProtoMessageFetchResultBaseProtoMessage]) -> List[BaseEvent]:
         if not webcast_response_message: return []
         event_type: Optional[Type[BaseEvent]] = EVENT_MAPPINGS.get(webcast_response_message.method)
         response_event = WebsocketResponseEvent().from_dict(webcast_response_message.to_dict()) # type: ignore
-        
-        if event_type is None:
-            return [response_event, UnknownEvent().from_dict(webcast_response_message.to_dict())] # type: ignore
-
-        try:
-            proto_event: BaseEvent = event_type().parse(webcast_response_message.payload) # type: ignore
+        if event_type is None: return [response_event, UnknownEvent().from_dict(webcast_response_message.to_dict())] # type: ignore
+        try: proto_event: BaseEvent = event_type().parse(webcast_response_message.payload) # type: ignore
         except Exception:
-            if not self.ignore_broken_payload:
-                self._logger.error(traceback.format_exc())
+            if not self.ignore_broken_payload: self._logger.error(traceback.format_exc())
             return [response_event]
-
         parsed_events: List[BaseEvent] = [response_event, proto_event]
-        
-        # Handle custom control events
         if isinstance(proto_event, ControlEvent):
             if proto_event.action in {ControlAction.CONTROL_ACTION_STREAM_ENDED, ControlAction.CONTROL_ACTION_STREAM_SUSPENDED}:
                 self._asyncio_loop.create_task(self.disconnect())
                 return [*parsed_events, LiveEndEvent().parse(webcast_response_message.payload)] # type: ignore
-            elif proto_event.action == ControlAction.CONTROL_ACTION_STREAM_PAUSED:
-                return [*parsed_events, LivePauseEvent().parse(webcast_response_message.payload)] # type: ignore
-            elif proto_event.action == ControlAction.CONTROL_ACTION_STREAM_UNPAUSED:
-                return [*parsed_events, LiveUnpauseEvent().parse(webcast_response_message.payload)] # type: ignore
-
+            elif proto_event.action == ControlAction.CONTROL_ACTION_STREAM_PAUSED: return [*parsed_events, LivePauseEvent().parse(webcast_response_message.payload)] # type: ignore
+            elif proto_event.action == ControlAction.CONTROL_ACTION_STREAM_UNPAUSED: return [*parsed_events, LiveUnpauseEvent().parse(webcast_response_message.payload)] # type: ignore
         return parsed_events
-
     @property
     def room_id(self) -> Optional[int]: return self._room_id
     @property
@@ -828,25 +718,174 @@ class TikTokLiveClient(AsyncIOEventEmitter):
         except RuntimeError: return asyncio.new_event_loop()
 
 # ==============================================================================
-# SECTION 8: EXECUTION
+# GUI SECTION (NATIVE PYQT6)
+# ==============================================================================
+
+class TikTokWorker(QThread):
+    sig_connected = pyqtSignal(str, int)
+    sig_disconnected = pyqtSignal()
+    sig_comment = pyqtSignal(str, str)
+    sig_error = pyqtSignal(str)
+    sig_log = pyqtSignal(str)
+
+    def __init__(self, unique_id):
+        super().__init__()
+        self.unique_id = unique_id
+        self.client: Optional[TikTokLiveClient] = None
+        self.loop: Optional[AbstractEventLoop] = None
+
+    def run(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.client = TikTokLiveClient(unique_id=self.unique_id)
+
+        @self.client.on(ConnectEvent)
+        async def on_connect(event: ConnectEvent):
+            self.sig_connected.emit(event.unique_id, event.room_id)
+            self.sig_log.emit(f"System: Terhubung ke Room ID {event.room_id}")
+
+        @self.client.on(DisconnectEvent)
+        async def on_disconnect(event: DisconnectEvent):
+            self.sig_log.emit("System: Terputus dari server.")
+
+        @self.client.on(CommentEvent)
+        async def on_comment(event: CommentEvent):
+            self.sig_comment.emit(event.user.nick_name, event.comment)
+
+        try:
+            self.sig_log.emit(f"System: Menghubungi {self.unique_id}...")
+            self.client.run()
+        except Exception as e:
+            if "Cancelled" not in str(e):
+                self.sig_error.emit(str(e))
+        finally:
+            self.sig_disconnected.emit()
+
+    def stop(self):
+        if self.client and self.client.connected:
+            asyncio.run_coroutine_threadsafe(self.client.disconnect(), self.loop)
+        self.quit()
+        self.wait()
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.worker: Optional[TikTokWorker] = None
+        self.setup_ui()
+
+    def setup_ui(self):
+        self.setWindowTitle("TikTok Comment Receiver")
+        self.resize(400, 600)
+        self.setStyleSheet("""
+            QMainWindow { background-color: #1e1e1e; color: #ffffff; }
+            QLabel { color: #ffffff; font-size: 14px; font-weight: bold; margin: 10px 0; }
+            QLineEdit { padding: 8px; border-radius: 5px; background-color: #2d2d2d; color: #fff; border: 1px solid #3d3d3d; }
+            QPushButton { padding: 8px; background-color: #0078d4; color: white; border-radius: 5px; border: none; font-weight: bold; }
+            QPushButton:hover { background-color: #1084e0; }
+            QPushButton:disabled { background-color: #333333; color: #888888; }
+            QTextEdit { background-color: #1e1e1e; color: #cccccc; border: 1px solid #333333; font-family: 'Segoe UI', sans-serif; font-size: 10pt; padding: 5px; }
+        """)
+
+        # Central Widget
+        container = QWidget()
+        self.setCentralWidget(container)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(10)
+
+        # Header
+        title_label = QLabel("TikTok Live Monitor")
+        layout.addWidget(title_label)
+
+        # Input Area
+        input_layout = QHBoxLayout()
+        self.input_username = QLineEdit()
+        self.input_username.setPlaceholderText("@username")
+        self.input_username.setText("@isaackogz")
+        
+        self.btn_connect = QPushButton("Sambungkan")
+        self.btn_connect.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_connect.clicked.connect(self.toggle_connection)
+
+        input_layout.addWidget(self.input_username)
+        input_layout.addWidget(self.btn_connect)
+        layout.addLayout(input_layout)
+
+        # Log Area
+        self.log_display = QTextEdit()
+        self.log_display.setReadOnly(True)
+        layout.addWidget(self.log_display)
+
+    def toggle_connection(self):
+        if self.worker is not None and self.worker.isRunning():
+            self.stop_worker()
+        else:
+            self.start_worker()
+
+    def start_worker(self):
+        username = self.input_username.text().strip()
+        if not username:
+            self.append_log("Error: Username wajib diisi!")
+            return
+
+        self.input_username.setEnabled(False)
+        self.btn_connect.setText("Putuskan")
+        self.btn_connect.setStyleSheet("background-color: #d93025;")  # Merah saat disconnect
+        self.log_display.clear()
+        
+        self.worker = TikTokWorker(username)
+        self.worker.sig_connected.connect(lambda u, r: self.append_log(f"✅ Connected to {u}"))
+        self.worker.sig_comment.connect(self.append_comment)
+        self.worker.sig_log.connect(self.append_log)
+        self.worker.sig_error.connect(self.on_worker_error)
+        self.worker.sig_disconnected.connect(self.on_disconnected)
+        self.worker.start()
+
+    def stop_worker(self):
+        self.btn_connect.setText("Memutuskan...")
+        self.btn_connect.setEnabled(False)
+        if self.worker:
+            self.worker.stop()
+
+    def on_disconnected(self):
+        self.worker = None
+        self.input_username.setEnabled(True)
+        self.btn_connect.setText("Sambungkan")
+        self.btn_connect.setEnabled(True)
+        self.btn_connect.setStyleSheet("background-color: #0078d4;") # Biru saat connect
+        self.append_log("--- Disconnected ---")
+
+    def on_worker_error(self, msg):
+        self.append_log(f"❌ Error: {msg}")
+
+    def append_comment(self, user, comment):
+        # HTML Formatting untuk warna
+        html = f'<div style="margin-bottom: 2px;"><span style="color: #4cc2ff; font-weight: bold;">{user}:</span> <span style="color: #dddddd;">{comment}</span></div>'
+        self.log_display.append(html)
+        self.scroll_to_bottom()
+
+    def append_log(self, text):
+        self.log_display.append(f'<div style="color: #888888;">{text}</div>')
+        self.scroll_to_bottom()
+
+    def scroll_to_bottom(self):
+        self.log_display.moveCursor(QTextCursor.MoveOperation.End)
+
+# ==============================================================================
+# MAIN EXECUTION
 # ==============================================================================
 
 if __name__ == '__main__':
-    TARGET_USERNAME = "@weathernewslive"  # Change to desired TikTok username
-    client: TikTokLiveClient = TikTokLiveClient(unique_id=TARGET_USERNAME)
+    # Setup High DPI
+    if hasattr(Qt.HighDpiScaleFactorRoundingPolicy, 'PassThrough'):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
-    @client.on(ConnectEvent)
-    async def on_connect(event: ConnectEvent):
-        print(f"Connected to @{event.unique_id} (Room ID: {client.room_id})")
+    # Init App
+    app = QApplication(sys.argv)
+    
+    # Create Window
+    window = MainWindow()
+    window.show()
 
-    async def on_comment(event: CommentEvent) -> None:
-        print(f"{event.user.nick_name} -> {event.comment}")
-
-    client.add_listener(CommentEvent, on_comment)
-
-    try:
-        client.run()
-    except KeyboardInterrupt:
-        print("Stopped by user.")
-    except Exception as e:
-        print(f"Error: {e}")
+    # Run Loop
+    sys.exit(app.exec())
