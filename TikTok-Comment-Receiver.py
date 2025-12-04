@@ -1,7 +1,7 @@
 # ==============================================================================
-# TIKTOK COMMENT RECEIVER (STANDALONE FLATTENED)
-# Target: @isaackogz
-# Based on: TikTokLive Library
+# TIKTOK COMMENT RECEIVER (STANDALONE - ORIGINAL FETCH LOGIC)
+# Target: @weathernewslive
+# Logic: Uses Remote Sign Server (No Local Oracle Needed)
 # ==============================================================================
 
 import asyncio
@@ -26,7 +26,6 @@ from http.cookies import SimpleCookie
 from io import BytesIO
 from json import JSONDecodeError
 from logging import Logger
-# Menambahkan Awaitable untuk fix error typing sebelumnya
 from typing import Optional, Type, Dict, Any, Union, Callable, List, Coroutine, AsyncIterator, Tuple, TypedDict, cast, Awaitable
 
 # --- 3RD PARTY IMPORTS (MUST BE INSTALLED VIA PIP) ---
@@ -38,32 +37,31 @@ from pyee.base import Handler
 from python_socks import ProxyType, parse_proxy_url
 from typing_extensions import deprecated
 
-# --- WARNING FIX START ---
-# Filter warning spesifik dari websockets
+# --- WARNING FIX & IMPORT COMPATIBILITY ---
+# Kita suppress warning dulu sebelum import
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="websockets")
+
 try:
-    # Coba import cara baru (versi 14+)
+    # PRIORITAS 1: CARA BARU (Websockets v14+)
+    # Import dari submodule .exceptions agar tidak muncul warning
     from websockets.exceptions import InvalidStatusCode
 except ImportError:
-    # Fallback ke cara lama
+    # PRIORITAS 2: CARA LAMA (Websockets versi lama)
+    # Jika submodule exceptions tidak ada/gagal, ambil dari root
     from websockets import InvalidStatusCode
-# --- WARNING FIX END ---
 
 from websockets.legacy.client import Connect, WebSocketClientProtocol
 from websockets_proxy import websockets_proxy
 from websockets_proxy.websockets_proxy import ProxyConnect
 
 # ==============================================================================
-# SECTION 1: CONSTANTS & SETTINGS (web_settings.py & __version__)
+# SECTION 1: SETTINGS
 # ==============================================================================
 
-PACKAGE_VERSION = "6.0.0"  # Hardcoded for standalone
+PACKAGE_VERSION = "6.0.0"
 
-# --- web_presets.py (Simplified) ---
-# Hardcoding presets to avoid extra file dependency, assuming standard PC/Chrome
-Location = {
-    "country": "ID", "city": "Jakarta", "lang": "id-ID", "lang_country": "id-ID", "tz_name": "Asia/Jakarta"
-}
+# Presets
+Location = {"country": "ID", "city": "Jakarta", "lang": "id-ID", "lang_country": "id-ID", "tz_name": "Asia/Jakarta"}
 Device = {
     "brand": "Microsoft", "model": "Windows PC", "os": "windows", "os_version": "10",
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -72,93 +70,48 @@ Device = {
 Screen = {"screen_width": 1920, "screen_height": 1080}
 Last_RTT = str(random.randint(100, 200))
 
-# --- web_settings.py Content ---
-
 DEFAULT_WEB_CLIENT_PARAMS: Dict[str, Union[int, str]] = {
-    "aid": 1988,
-    "app_language": Location["lang"],
-    "app_name": 'tiktok_web',
-    "browser_language": Location["lang_country"],
-    "browser_name": Device["browser_name"],
-    "browser_online": "true",
-    "browser_platform": Device["browser_platform"],
-    "browser_version": Device["browser_version"],
-    "cookie_enabled": "true",
-    "device_platform": "web_pc",
-    "focus_state": "true",
-    "from_page": '',
-    "history_len": random.randint(4, 14),
-    "is_fullscreen": "false",
-    "is_page_visible": "true",
-    "screen_height": Screen["screen_height"],
-    "screen_width": Screen["screen_width"],
-    "tz_name": Location["tz_name"],
-    "channel": "tiktok_web",
-    "data_collection_enabled": "true",
-    "os": Device["os"],
-    "priority_region": Location["country"],
-    "region": Location["country"],
-    "user_is_login": "false",
-    "webcast_language": Location["lang"],
-    "msToken": "",
+    "aid": 1988, "app_language": Location["lang"], "app_name": 'tiktok_web',
+    "browser_language": Location["lang_country"], "browser_name": Device["browser_name"],
+    "browser_online": "true", "browser_platform": Device["browser_platform"],
+    "browser_version": Device["browser_version"], "cookie_enabled": "true",
+    "device_platform": "web_pc", "focus_state": "true", "from_page": '',
+    "history_len": random.randint(4, 14), "is_fullscreen": "false", "is_page_visible": "true",
+    "screen_height": Screen["screen_height"], "screen_width": Screen["screen_width"],
+    "tz_name": Location["tz_name"], "channel": "tiktok_web", "data_collection_enabled": "true",
+    "os": Device["os"], "priority_region": Location["country"], "region": Location["country"],
+    "user_is_login": "false", "webcast_language": Location["lang"], "msToken": "",
 }
 
 DEFAULT_WS_CLIENT_PARAMS: Dict[str, Union[int, str]] = {
-    "aid": 1988,
-    "app_language": Location["lang"],
-    "app_name": "tiktok_web",
-    "browser_platform": Device["browser_platform"],
-    "browser_language": Location["lang_country"],
-    "browser_name": Device["browser_name"],
-    "browser_version": Device["browser_version"],
-    "browser_online": "true",
-    "cookie_enabled": "true",
-    "tz_name": Location["tz_name"],
-    "device_platform": "web",
-    "debug": "false",
-    "host": urllib.parse.quote_plus("https://webcast.tiktok.com"),
-    "identity": "audience",
-    "live_id": "12",
-    "sup_ws_ds_opt": "1",
-    "update_version_code": "2.0.0",
-    "version_code": "180800",
-    "did_rule": "3",
-    "screen_height": Screen["screen_height"],
-    "screen_width": Screen["screen_width"],
-    "heartbeat_duration": "0",
-    "resp_content_type": "protobuf",
-    "history_comment_count": "6",
-    "last_rtt": Last_RTT
+    "aid": 1988, "app_language": Location["lang"], "app_name": "tiktok_web",
+    "browser_platform": Device["browser_platform"], "browser_language": Location["lang_country"],
+    "browser_name": Device["browser_name"], "browser_version": Device["browser_version"],
+    "browser_online": "true", "cookie_enabled": "true", "tz_name": Location["tz_name"],
+    "device_platform": "web", "debug": "false", "host": urllib.parse.quote_plus("https://webcast.tiktok.com"),
+    "identity": "audience", "live_id": "12", "sup_ws_ds_opt": "1", "update_version_code": "2.0.0",
+    "version_code": "180800", "did_rule": "3", "screen_height": Screen["screen_height"],
+    "screen_width": Screen["screen_width"], "heartbeat_duration": "0", "resp_content_type": "protobuf",
+    "history_comment_count": "6", "last_rtt": Last_RTT
 }
 
 DEFAULT_WS_CLIENT_PARAMS_APPEND_STR: str = "&version_code=270000"
 
 DEFAULT_REQUEST_HEADERS: Dict[str, str] = {
-    "Connection": 'keep-alive',
-    'Cache-Control': 'max-age=0',
-    'User-Agent': Device["user_agent"],
-    "Accept": 'text/html,application/json,application/protobuf',
-    "Referer": 'https://www.tiktok.com/',
-    "Origin": 'https://www.tiktok.com',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate',
-    "Sec-Fetch-Site": 'same-site',
-    "Sec-Fetch-Mode": 'cors',
-    "Sec-Fetch-Dest": 'empty',
-    "Sec-Fetch-Ua-Mobile": '?0',
+    "Connection": 'keep-alive', 'Cache-Control': 'max-age=0', 'User-Agent': Device["user_agent"],
+    "Accept": 'text/html,application/json,application/protobuf', "Referer": 'https://www.tiktok.com/',
+    "Origin": 'https://www.tiktok.com', 'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate', "Sec-Fetch-Site": 'same-site', "Sec-Fetch-Mode": 'cors',
+    "Sec-Fetch-Dest": 'empty', "Sec-Fetch-Ua-Mobile": '?0',
 }
 
-DEFAULT_COOKIES: Dict[str, str] = {
-    "tt-target-idc": "useast1a"
-}
-
+DEFAULT_COOKIES: Dict[str, str] = {"tt-target-idc": "useast1a"}
 CLIENT_NAME: str = "ttlive-python"
-SUPPORTS_CURL_CFFI: bool = False # Force False to simplify standalone
 
 @dataclass()
 class _WebDefaults:
     tiktok_app_url: str = "https://www.tiktok.com"
-    tiktok_sign_url: str = "https://tiktok.eulerstream.com"
+    tiktok_sign_url: str = "https://tiktok.eulerstream.com" # ORIGINAL SIGN SERVER
     tiktok_webcast_url: str = 'https://webcast.tiktok.com/webcast'
     web_client_params: dict = field(default_factory=lambda: DEFAULT_WEB_CLIENT_PARAMS)
     web_client_headers: dict = field(default_factory=lambda: DEFAULT_REQUEST_HEADERS)
@@ -171,31 +124,19 @@ class _WebDefaults:
 WebDefaults: _WebDefaults = _WebDefaults()
 
 # ==============================================================================
-# SECTION 2: LOGGING (logger.py)
+# SECTION 2: LOGGING
 # ==============================================================================
 
 class LogLevel(enum.Enum):
-    CRITICAL = 50
-    ERROR = 40
-    WARNING = 30
-    INFO = 20
-    DEBUG = 10
-    NOTSET = 0
-
+    CRITICAL = 50; ERROR = 40; WARNING = 30; INFO = 20; DEBUG = 10; NOTSET = 0
     @property
-    def value(self) -> int:
-        return cast(int, super().value)
+    def value(self) -> int: return cast(int, super().value)
 
 class TikTokLiveLogHandler(logging.StreamHandler):
     LOGGER_NAME: str = "TikTokLive"
     LOGGER: Optional[logging.Logger] = None
     TIME_FORMAT: str = "%H:%M:%S"
-    SPACING: Dict[int, int] = {
-        logging.INFO: 1,
-        logging.ERROR: 0,
-        logging.WARNING: 1,
-        logging.DEBUG: 0
-    }
+    SPACING: Dict[int, int] = {logging.INFO: 1, logging.ERROR: 0, logging.WARNING: 1, logging.DEBUG: 0}
     FORMAT: str = "[%(name)s] %(levelname)s from %(stack)s:%(lineno)d — %(message)s"
 
     def __init__(self, stream: Optional[Any] = None, formatter: Optional[logging.Formatter] = None):
@@ -204,8 +145,7 @@ class TikTokLiveLogHandler(logging.StreamHandler):
 
     @classmethod
     def get_logger(cls, level: Optional[LogLevel] = None, stream: Optional[Any] = None) -> logging.Logger:
-        if cls.LOGGER and not level:
-            return cls.LOGGER
+        if cls.LOGGER and not level: return cls.LOGGER
         if not cls.LOGGER:
             log_handler: TikTokLiveLogHandler = TikTokLiveLogHandler(stream)
             cls.LOGGER = logging.getLogger(cls.LOGGER_NAME)
@@ -218,15 +158,12 @@ class TikTokLiveLogHandler(logging.StreamHandler):
         work_dir: str = os.path.normpath(os.getcwd())
         stack_path: str = os.path.normpath(record.pathname)
         start_location: int = stack_path.find(work_dir)
-        if start_location >= 0:
-            stack_path = stack_path[start_location + len(work_dir) + 1:]
+        if start_location >= 0: stack_path = stack_path[start_location + len(work_dir) + 1:]
         path_parts: List[str] = stack_path.split("/")
         finished_parts: List[str] = []
         for idx, part in enumerate(path_parts):
             if not part: continue
-            if idx + 1 == len(path_parts):
-                finished_parts.append(part)
-                break
+            if idx + 1 == len(path_parts): finished_parts.append(part); break
             finished_parts.append(part[0])
         return ".".join(finished_parts)
 
@@ -236,19 +173,17 @@ class TikTokLiveLogHandler(logging.StreamHandler):
             record.stack = self.format_path(record)
             self.stream.write(self.format(record) + self.terminator)
             self.flush()
-        except Exception:
-            self.handleError(record)
+        except Exception: self.handleError(record)
 
 # ==============================================================================
-# SECTION 3: ERRORS (errors.py)
+# SECTION 3: ERRORS
 # ==============================================================================
 
 class TikTokLiveError(RuntimeError):
     def __init__(self, *args):
         args = list(args)
         args.insert(0, f"TikTokLive v{PACKAGE_VERSION} ->")
-        if len(args) == 1:
-            args.append(self.__class__.__name__)
+        if len(args) == 1: args.append(self.__class__.__name__)
         super().__init__(" ".join(args))
 
 class AlreadyConnectedError(TikTokLiveError): pass
@@ -264,31 +199,20 @@ class WebcastBlocked200Error(TikTokLiveError): pass
 
 class SignAPIError(TikTokLiveError):
     class ErrorReason(enum.Enum):
-        RATE_LIMIT = 1
-        CONNECT_ERROR = 2
-        EMPTY_PAYLOAD = 3
-        SIGN_NOT_200 = 4
-        EMPTY_COOKIES = 5
-        PREMIUM_ENDPOINT = 6
-        AUTHENTICATED_WS = 7
-
+        RATE_LIMIT = 1; CONNECT_ERROR = 2; EMPTY_PAYLOAD = 3; SIGN_NOT_200 = 4
+        EMPTY_COOKIES = 5; PREMIUM_ENDPOINT = 6; AUTHENTICATED_WS = 7
     def __init__(self, reason: ErrorReason, *args: str, response: Optional[httpx.Response] = None):
         self._response = response
         self.reason = reason
         args = list(args)
         args.insert(0, f"[{reason.name}]")
         super().__init__(" ".join(args))
-
     @property
     def response(self) -> httpx.Response | None: return self._response
 
 class SignatureRateLimitError(SignAPIError):
     def __init__(self, api_message: Optional[str], *args, response: httpx.Response):
         super().__init__(SignAPIError.ErrorReason.RATE_LIMIT, *args, response=response)
-
-    @classmethod
-    def calculate_retry_after(cls, response: httpx.Response) -> int:
-        return int(response.headers.get("RateLimit-Remaining", 0))
 
 class AuthenticatedWebSocketConnectionError(SignAPIError):
     def __init__(self, *args, **kwargs):
@@ -299,7 +223,7 @@ class FailedResolveUserId(TikTokLiveError): pass
 class FailedParseRoomIdError(TikTokLiveError): pass
 
 # ==============================================================================
-# SECTION 4: PROTOCOLS (custom_extras.py & tiktok_proto.py)
+# SECTION 4: PROTOCOLS
 # ==============================================================================
 
 class WebcastWSAckPayload(TypedDict):
@@ -338,18 +262,10 @@ class WebcastImEnterRoomMessage(betterproto.Message):
     filter_welcome_msg: str = betterproto.string_field(9)
     is_anchor_continue_keep_msg: bool = betterproto.bool_field(10)
 
-# --- START: tiktok_proto.py CONTENT ---
-# Generated by the protocol buffer compiler.  DO NOT EDIT!
-# sources: enums.proto, webcast.proto
-# plugin: python-betterproto
-# This file has been @generated
-
+# --- tiktok_proto.py (Essential Only) ---
 class ControlAction(betterproto.Enum):
-    CONTROL_ACTION_UNKNOWN = 0
-    CONTROL_ACTION_STREAM_PAUSED = 1
-    CONTROL_ACTION_STREAM_UNPAUSED = 2
-    CONTROL_ACTION_STREAM_ENDED = 3
-    CONTROL_ACTION_STREAM_SUSPENDED = 4
+    CONTROL_ACTION_UNKNOWN = 0; CONTROL_ACTION_STREAM_PAUSED = 1; CONTROL_ACTION_STREAM_UNPAUSED = 2
+    CONTROL_ACTION_STREAM_ENDED = 3; CONTROL_ACTION_STREAM_SUSPENDED = 4
 
 @dataclass(eq=False, repr=False)
 class CommonMessageData(betterproto.Message):
@@ -428,10 +344,6 @@ class Text(betterproto.Message):
     default_format: "TextFormat" = betterproto.message_field(3)
     pieces: List["TextPiece"] = betterproto.message_field(4)
 
-# --- Simplified PROTO Definitions for Comment Receiver ---
-# Only defining what is strictly needed for ConnectEvent and CommentEvent to function.
-# Full proto is too large for this context, but essential classes are here.
-
 @dataclass(eq=False, repr=False)
 class WebcastChatMessage(betterproto.Message):
     base_message: "CommonMessageData" = betterproto.message_field(1)
@@ -452,17 +364,13 @@ class WebcastMemberMessage(betterproto.Message):
 
 @dataclass(eq=False, repr=False)
 class ProtoMessageFetchResult(betterproto.Message):
-    messages: List["ProtoMessageFetchResultBaseProtoMessage"] = (
-        betterproto.message_field(1)
-    )
+    messages: List["ProtoMessageFetchResultBaseProtoMessage"] = (betterproto.message_field(1))
     cursor: str = betterproto.string_field(2)
     fetch_interval: int = betterproto.int64_field(3)
     now: int = betterproto.int64_field(4)
     internal_ext: str = betterproto.string_field(5)
     fetch_type: int = betterproto.int32_field(6)
-    route_params: Dict[str, str] = betterproto.map_field(
-        7, betterproto.TYPE_STRING, betterproto.TYPE_STRING
-    )
+    route_params: Dict[str, str] = betterproto.map_field(7, betterproto.TYPE_STRING, betterproto.TYPE_STRING)
     heartbeat_duration: int = betterproto.int64_field(8)
     need_ack: bool = betterproto.bool_field(9)
     push_server: str = betterproto.string_field(10)
@@ -481,10 +389,8 @@ class WebcastControlMessage(betterproto.Message):
     base_message: "CommonMessageData" = betterproto.message_field(1)
     action: int = betterproto.int32_field(2)
 
-# --- END tiktok_proto.py ---
-
 # ==============================================================================
-# SECTION 5: EVENTS (base_event.py, proto_events.py, custom_events.py)
+# SECTION 5: EVENTS
 # ==============================================================================
 
 class BaseEvent:
@@ -493,33 +399,25 @@ class BaseEvent:
     @classmethod
     def get_type(cls) -> str: return cls.__name__
     @property
-    def bytes(self) -> Optional[bytes]:
-        if hasattr(self, 'payload'): return self.payload
-        return None
+    def bytes(self) -> Optional[bytes]: return self.payload if hasattr(self, 'payload') else None
     @property
     def as_base64(self) -> str: return base64.b64encode(self.bytes).decode()
     @property
     def size(self) -> int: return len(self.bytes) if self.bytes else -1
 
-# --- Extended User Wrapper ---
 class ExtendedUser(User):
     @classmethod
-    def from_user(cls, user: User):
-        # Helper to convert basic User to Extended (simplified for this script)
-        return user
+    def from_user(cls, user: User): return user
 
 class CommentEvent(BaseEvent, WebcastChatMessage):
-    """CommentEvent"""
     user_info: ExtendedUser
     at_user: ExtendedUser
-
     @property
     def user(self) -> ExtendedUser: return ExtendedUser.from_user(self.user_info)
     @property
     def comment(self) -> str: return self.content
 
 class ControlEvent(BaseEvent, WebcastControlMessage):
-    """ControlEvent"""
     action: ControlAction = betterproto.enum_field(2)
 
 class WebsocketResponseEvent(ProtoMessageFetchResult, BaseEvent): pass
@@ -535,53 +433,21 @@ class LiveEndEvent(ControlEvent): pass
 class LivePauseEvent(ControlEvent): pass
 class LiveUnpauseEvent(ControlEvent): pass
 
-# Mapping for event parsing
-EVENT_MAPPINGS: Dict[str, BaseEvent] = {
-    "WebcastChatMessage": CommentEvent,
-    "WebcastControlMessage": ControlEvent,
-    # Add other events here if needed from proto_events.py...
-}
-
+EVENT_MAPPINGS: Dict[str, BaseEvent] = {"WebcastChatMessage": CommentEvent, "WebcastControlMessage": ControlEvent}
 ProtoEvent = Union[CommentEvent, ControlEvent]
 CustomEvent = Union[WebsocketResponseEvent, UnknownEvent, ConnectEvent, LiveEndEvent, LivePauseEvent, LiveUnpauseEvent, DisconnectEvent]
 
 # ==============================================================================
-# SECTION 6: CLIENT LOGIC (Oracle, WS Utils, Web Utils, Fetch Routes)
+# SECTION 6: CLIENT LOGIC
 # ==============================================================================
 
-# --- oracle_client.py ---
-def get_oracle_signature(url: str) -> dict:
-    pipe_name = r'\\.\pipe\TikTokOracle'
-    if not os.path.exists(pipe_name):
-        raise ConnectionError("Oracle Pipe not found! Make sure 'TikTok Oracle' Extension is active.")
-    try:
-        with open(pipe_name, 'r+b', buffering=0) as f:
-            f.write(url.encode('utf-8'))
-            response_bytes = f.read(4096)
-            if not response_bytes: return {}
-            response_str = response_bytes.decode('utf-8').strip()
-            return json.loads(response_str)
-    except Exception as e:
-        print(f"[Oracle Error] {e}")
-        return {}
-
-# --- web_signer.py (Simplified wrapper for Oracle) ---
-class TikTokSigner:
-    def __init__(self, *args, **kwargs): pass
-    async def webcast_sign(self, url: URL, **kwargs) -> Dict[str, Any]:
-        full_url = str(url)
-        oracle_data = get_oracle_signature(full_url)
-        return {'response': {'signedUrl': f"{full_url}&X-Bogus={oracle_data.get('x_bogus', '')}&_signature={oracle_data.get('_signature', '')}", 'userAgent': kwargs.get('user_agent')}}
-
-# --- ws_utils.py ---
+# --- Helper Utilities ---
 def build_webcast_uri(initial_webcast_response: ProtoMessageFetchResult, base_uri_params: dict, base_uri_append_str: str) -> str:
     if not initial_webcast_response.cursor: raise InitialCursorMissingError("Missing cursor.")
     if not initial_webcast_response.push_server: raise WebsocketURLMissingError("No websocket URL.")
     uri_params: dict = {
-        **initial_webcast_response.route_params,
-        **base_uri_params,
-        "internal_ext": initial_webcast_response.internal_ext,
-        "cursor": initial_webcast_response.cursor,
+        **initial_webcast_response.route_params, **base_uri_params,
+        "internal_ext": initial_webcast_response.internal_ext, "cursor": initial_webcast_response.cursor,
     }
     return (initial_webcast_response.push_server + "?" + '&'.join(f"{key}={value}" for key, value in uri_params.items()) + base_uri_append_str)
 
@@ -591,10 +457,8 @@ def extract_webcast_response_message(push_frame: WebcastPushFrame, logger: loggi
     if push_frame.headers.get('compress_type', None) != 'gzip':
         return ProtoMessageFetchResult().parse(push_frame.payload)
     gzip_file = GzipFile(fileobj=BytesIO(push_frame.payload))
-    try:
-        decompressed_bytes = gzip_file.read()
-    finally:
-        gzip_file.close()
+    try: decompressed_bytes = gzip_file.read()
+    finally: gzip_file.close()
     return ProtoMessageFetchResult().parse(decompressed_bytes)
 
 def extract_websocket_options(headers: dict) -> dict[str, str]:
@@ -602,7 +466,6 @@ def extract_websocket_options(headers: dict) -> dict[str, str]:
     options.load(headers.get('Handshake-Options', ''))
     return {key: value.value for key, value in options.items()}
 
-# --- web_utils.py ---
 def check_authenticated_session(session_id: Optional[str], tt_target_idc: Optional[str], session_required: bool) -> bool:
     if not session_id:
         if session_required: raise ValueError("Session ID required.")
@@ -610,14 +473,18 @@ def check_authenticated_session(session_id: Optional[str], tt_target_idc: Option
     if not tt_target_idc: raise ValueError("Target IDC required.")
     return True
 
-# --- ws_connect.py ---
+# --- TikTok Signer (Simplified Holder) ---
+class TikTokSigner:
+    def __init__(self, *args, **kwargs):
+        self.client = httpx.AsyncClient()
+
+# --- WS Connect ---
 WebcastProxy = Union[httpx.Proxy, websockets_proxy.Proxy]
 WebcastIterator = AsyncIterator[Tuple[Optional[WebcastPushFrame], ProtoMessageFetchResult]]
 
 class WebcastConnect(Connect):
     def __init__(self, initial_webcast_response: ProtoMessageFetchResult, logger: logging.Logger, base_uri_params: Dict[str, Any], base_uri_append_str: str, uri: Optional[str] = None, **kwargs):
-        if uri is None:
-            uri = build_webcast_uri(initial_webcast_response, base_uri_params, base_uri_append_str)
+        if uri is None: uri = build_webcast_uri(initial_webcast_response, base_uri_params, base_uri_append_str)
         super().__init__(uri, logger=logger, **kwargs)
         self.logger = self._logger = logger
         self._ws: Optional[WebSocketClientProtocol] = None
@@ -637,17 +504,13 @@ class WebcastConnect(Connect):
                 yield None, self._initial_response
                 async for payload_bytes in protocol:
                     webcast_push_frame: WebcastPushFrame = WebcastPushFrame().parse(payload_bytes)
-                    if webcast_push_frame.payload_type != "msg":
-                        continue
+                    if webcast_push_frame.payload_type != "msg": continue
                     webcast_response: ProtoMessageFetchResult = extract_webcast_response_message(webcast_push_frame, logger=self._logger)
                     yield webcast_push_frame, webcast_response
         except InvalidStatusCode as ex:
-            if ex.status_code == 200:
-                raise WebcastBlocked200Error(f"WebSocket rejected: {ex.headers.get('Handshake-Msg')}") from ex
+            if ex.status_code == 200: raise WebcastBlocked200Error(f"WebSocket rejected: {ex.headers.get('Handshake-Msg')}") from ex
             raise
-        finally:
-            self._ws = None
-            self._ws_options = None
+        finally: self._ws = None; self._ws_options = None
 
 class WebcastProxyConnect(WebcastConnect, ProxyConnect):
     def __init__(self, proxy: Optional[WebcastProxy], **kwargs):
@@ -658,7 +521,7 @@ class WebcastProxyConnect(WebcastConnect, ProxyConnect):
         parsed[3], parsed[4] = proxy.auth[0], proxy.auth[1]
         return websockets_proxy.Proxy(*parsed)
 
-# --- ws_client.py ---
+# --- WS Client ---
 class WebcastWSClient:
     DEFAULT_PING_INTERVAL: float = 5.0
     def __init__(self, ws_kwargs: Optional[dict] = None, ws_proxy: Optional[WebcastProxy] = None):
@@ -695,8 +558,7 @@ class WebcastWSClient:
         if self._ws_proxy is not None:
             ws_kwargs["proxy_conn_timeout"] = ws_kwargs.get("proxy_conn_timeout", 10.0)
             ws_kwargs["proxy"] = self._ws_proxy
-        if not process_connect_events:
-            initial_webcast_response.messages = []
+        if not process_connect_events: initial_webcast_response.messages = []
 
         self._connection_generator = self._connect_generator_class(
             initial_webcast_response=initial_webcast_response,
@@ -709,10 +571,8 @@ class WebcastWSClient:
         )
 
         async for webcast_push_frame, webcast_response in cast(WebcastIterator, self._connection_generator):
-            if webcast_response.is_first:
-                await self.switch_rooms(room_id=room_id)
-            if webcast_response.need_ack:
-                await self.send_ack(webcast_response=webcast_response, webcast_push_frame=webcast_push_frame)
+            if webcast_response.is_first: await self.switch_rooms(room_id=room_id)
+            if webcast_response.need_ack: await self.send_ack(webcast_response=webcast_response, webcast_push_frame=webcast_push_frame)
             yield webcast_response
             if not self.connected: break
 
@@ -748,7 +608,7 @@ class WebcastWSClient:
         except asyncio.CancelledError: pass
         except Exception: self._logger.error("Ping loop failed", exc_info=True)
 
-# --- web_base.py (Simplified) ---
+# --- Web Base ---
 class TikTokHTTPClient:
     def __init__(self, web_proxy: Optional[Proxy] = None, httpx_kwargs: Optional[dict] = None):
         self.cookies = Cookies(WebDefaults.web_client_cookies)
@@ -757,18 +617,11 @@ class TikTokHTTPClient:
         self._httpx = AsyncClient(proxy=web_proxy, cookies=self.cookies, **(httpx_kwargs or {}))
         self._tiktok_signer = TikTokSigner()
 
+    @property
+    def signer(self) -> TikTokSigner: return self._tiktok_signer
     async def close(self) -> None: await self._httpx.aclose()
-
-    async def get(self, url: str, extra_params: dict = None, sign_url: bool = False, **kwargs) -> Response:
-        final_params = {**self.params, **(extra_params or {})}
-        req = self._httpx.build_request("GET", url, params=final_params, headers=self.headers, cookies=self.cookies)
-        
-        if sign_url:
-            sign_data = (await self._tiktok_signer.webcast_sign(url=req.url, user_agent=self.headers['User-Agent']))['response']
-            req.headers['User-Agent'] = sign_data['userAgent']
-            req.url = URL(sign_data['signedUrl'])
-            
-        return await self._httpx.send(req)
+    async def get(self, url: str, extra_params: dict = None, **kwargs) -> Response:
+        return await self._httpx.get(url, params={**self.params, **(extra_params or {})}, headers=self.headers, cookies=self.cookies)
 
 class ClientRoute(ABC):
     def __init__(self, web: TikTokHTTPClient):
@@ -777,48 +630,74 @@ class ClientRoute(ABC):
     @abstractmethod
     def __call__(self, **kwargs: Any) -> Awaitable[Any]: raise NotImplementedError
 
-# --- Route: FetchRoomIdLiveHTMLRoute ---
+# --- Fetch Room ID Route ---
 class FetchRoomIdLiveHTMLRoute(ClientRoute):
     SIGI_PATTERN: re.Pattern = re.compile(r"""<script id="SIGI_STATE" type="application/json">(.*?)</script>""")
-    
     async def __call__(self, unique_id: str) -> str:
         response: Response = await self._web.get(url=WebDefaults.tiktok_app_url + f"/@{unique_id}/live")
         match = self.SIGI_PATTERN.search(response.text)
         if match is None: raise FailedParseRoomIdError("Failed to extract SIGI_STATE.")
-        try:
-            sigi_state = json.loads(match.group(1))
+        try: sigi_state = json.loads(match.group(1))
         except JSONDecodeError: raise FailedParseRoomIdError("Failed to parse SIGI_STATE.")
         if sigi_state.get('LiveRoom') is None: raise UserNotFoundError("User not LIVE or invalid.")
         room_data = sigi_state["LiveRoom"]["liveRoomUserInfo"]["user"]
         if room_data.get('status') == 4: raise UserOfflineError("User is offline.")
         return room_data.get('roomId')
 
-# --- Route: FetchSignedWebSocketRoute ---
-class WebcastPlatform:
+# --- REPLACED: Fetch Signed Websocket Route (ORIGINAL LOGIC) ---
+class WebcastPlatform(enum.Enum):
     WEB = "web"
+    MOBILE = "mobile"
 
 class FetchSignedWebSocketRoute(ClientRoute):
-    async def __call__(self, platform: str, room_id: Optional[int] = None) -> ProtoMessageFetchResult:
-        current_room_id = room_id or self._web.params.get('room_id', None)
-        params = WebDefaults.web_client_params.copy()
-        params.update({
-            'client': CLIENT_NAME, 'room_id': current_room_id, 'user_agent': self._web.headers['User-Agent'],
-            'resp_content_type': 'protobuf', 'identity': 'audience', 'link_mic_boost': 1, 'compress': 'gzip', 'fetch_rule': 1
-        })
-        base_url = "https://webcast.tiktok.com/webcast/im/fetch/"
-        query_string = urllib.parse.urlencode(params)
-        oracle_result = get_oracle_signature(f"{base_url}?{query_string}")
-        if not oracle_result or 'x_bogus' not in oracle_result:
-            raise SignAPIError(SignAPIError.ErrorReason.CONNECT_ERROR, "Oracle Failed!")
-        params['X-Bogus'] = oracle_result['x_bogus']
-        if '_signature' in oracle_result: params['_signature'] = oracle_result['_signature']
+    async def __call__(self, platform: WebcastPlatform, room_id: Optional[int] = None, session_id: Optional[str] = None, tt_target_idc: Optional[str] = None) -> ProtoMessageFetchResult:
+        signer_client: httpx.AsyncClient = self._web.signer.client
+        sign_params: dict = {
+            'client': CLIENT_NAME,
+            'room_id': room_id or self._web.params.get('room_id', None),
+            'user_agent': self._web.headers['User-Agent'],
+            'platform': platform.value,
+            'client_enter': True
+        }
+        session_id = session_id or self._web.cookies.get('sessionid')
+        tt_target_idc = tt_target_idc or self._web.cookies.get('tt-target-idc')
 
-        response: httpx.Response = await self._web.get(url=base_url, extra_params=params)
-        if response.status_code != 200: raise SignAPIError(SignAPIError.ErrorReason.SIGN_NOT_200, f"Error: {response.status_code}", response=response)
-        data = await response.aread()
-        return extract_webcast_response_message(push_frame=WebcastPushFrame(log_id=-1, payload=data, payload_type="msg"), logger=self._logger)
+        if check_authenticated_session(session_id, tt_target_idc, session_required=False):
+            sign_params['session_id'] = session_id
+            sign_params['tt_target_idc'] = tt_target_idc
+            self._logger.warning("Sending session ID to sign server.")
 
-# --- web_client.py ---
+        try:
+            response: httpx.Response = await signer_client.get(
+                url=WebDefaults.tiktok_sign_url + "/webcast/fetch/",
+                params=sign_params, timeout=15
+            )
+        except httpx.ConnectError as ex:
+            raise SignAPIError(SignAPIError.ErrorReason.CONNECT_ERROR, "Failed to connect to sign server!", response=None) from ex
+
+        data: bytes = await response.aread()
+
+        if response.status_code == 429:
+            raise SignatureRateLimitError("Rate Limit", "Too many connections, try again later.", response=response)
+        elif not data:
+            raise SignAPIError(SignAPIError.ErrorReason.EMPTY_PAYLOAD, "Sign API returned empty response.", response=response)
+        elif response.status_code != 200:
+            raise SignAPIError(SignAPIError.ErrorReason.SIGN_NOT_200, f"Sign API Error: {response.status_code}", response=response)
+
+        self._update_client_cookies(response)
+        return extract_webcast_response_message(logger=self._logger, push_frame=WebcastPushFrame(log_id=-1, payload=data, payload_type="msg"))
+
+    def _update_client_cookies(self, response: Response) -> None:
+        jar: SimpleCookie = SimpleCookie()
+        cookies_header: Optional[str] = response.headers.get("X-Set-TT-Cookie")
+        if not cookies_header:
+            raise SignAPIError(SignAPIError.ErrorReason.EMPTY_COOKIES, "Sign server did not return cookies!", response=response)
+        jar.load(cookies_header)
+        for cookie, morsel in jar.items():
+            if self._web.cookies.get(cookie): self._web.cookies.delete(cookie)
+            self._web.cookies.set(cookie, morsel.value, ".tiktok.com")
+
+# --- Web Client ---
 class TikTokWebClient(TikTokHTTPClient):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -826,11 +705,11 @@ class TikTokWebClient(TikTokHTTPClient):
         self.fetch_signed_websocket = FetchSignedWebSocketRoute(self)
 
 # ==============================================================================
-# SECTION 7: MAIN CLIENT (client.py)
+# SECTION 7: MAIN CLIENT
 # ==============================================================================
 
 class TikTokLiveClient(AsyncIOEventEmitter):
-    def __init__(self, unique_id: str | int, platform: str = WebcastPlatform.WEB, web_proxy: Optional[httpx.Proxy] = None, ws_proxy: Optional[WebcastProxy] = None, web_kwargs: Optional[dict] = None, ws_kwargs: Optional[dict] = None):
+    def __init__(self, unique_id: str | int, platform: WebcastPlatform = WebcastPlatform.WEB, web_proxy: Optional[httpx.Proxy] = None, ws_proxy: Optional[WebcastProxy] = None, web_kwargs: Optional[dict] = None, ws_kwargs: Optional[dict] = None):
         super().__init__()
         self._ws: WebcastWSClient = WebcastWSClient(ws_kwargs=ws_kwargs or {}, ws_proxy=ws_proxy)
         self._web: TikTokWebClient = TikTokWebClient(web_proxy=web_proxy or (web_kwargs or {}).pop("web_proxy", None), **(web_kwargs or {}))
@@ -838,7 +717,7 @@ class TikTokLiveClient(AsyncIOEventEmitter):
         self._web.params['root_referer'] = f"https://www.tiktok.com/@{unique_id}/live"
         self._logger: Logger = TikTokLiveLogHandler.get_logger(level=LogLevel.INFO)
         self.ignore_broken_payload: bool = False
-        self._ws_platform: str = platform
+        self._ws_platform: WebcastPlatform = platform
         self._unique_id: str = self.parse_unique_id(unique_id)
         self._room_id: Optional[int] = None
         self._event_loop_task: Optional[Task] = None
@@ -850,7 +729,6 @@ class TikTokLiveClient(AsyncIOEventEmitter):
     async def start(self, process_connect_events: bool = True, compress_ws_events: bool = True, room_id: Optional[int] = None) -> Task:
         if self._ws.connected: raise AlreadyConnectedError("Already connected!")
         
-        # Fetch Room ID
         try:
             self._room_id = int(room_id or await self._web.fetch_room_id_from_html(self._unique_id))
         except Exception as e:
@@ -860,10 +738,9 @@ class TikTokLiveClient(AsyncIOEventEmitter):
         self._web.params["room_id"] = str(self._room_id)
         self._logger.info(f"Connected to Room ID: {self._room_id}")
 
-        # Fetch Signed Websocket URL
+        # Fetch Signed Websocket URL using the Original Logic (EulerStream)
         initial_webcast_response: ProtoMessageFetchResult = await self._web.fetch_signed_websocket(self._ws_platform)
 
-        # Start WS Loop
         self._event_loop_task = self._asyncio_loop.create_task(
             self._ws_client_loop(initial_webcast_response, process_connect_events, compress_ws_events)
         )
@@ -951,29 +828,22 @@ class TikTokLiveClient(AsyncIOEventEmitter):
         except RuntimeError: return asyncio.new_event_loop()
 
 # ==============================================================================
-# SECTION 8: MAIN EXECUTION
+# SECTION 8: EXECUTION
 # ==============================================================================
 
 if __name__ == '__main__':
-    # USER CONFIGURATION
-    TARGET_USERNAME = "@weathernewslive"
-
-    # Create the client
+    TARGET_USERNAME = "@weathernewslive"  # Change to desired TikTok username
     client: TikTokLiveClient = TikTokLiveClient(unique_id=TARGET_USERNAME)
 
-    # Listen to an event with a decorator!
     @client.on(ConnectEvent)
     async def on_connect(event: ConnectEvent):
         print(f"Connected to @{event.unique_id} (Room ID: {client.room_id})")
 
-    # Or, add it manually via "client.add_listener()"
     async def on_comment(event: CommentEvent) -> None:
         print(f"{event.user.nick_name} -> {event.comment}")
 
     client.add_listener(CommentEvent, on_comment)
 
-    # Run the client and block the main thread
-    # await client.start() to run non-blocking
     try:
         client.run()
     except KeyboardInterrupt:
